@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.AlertDialog;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
@@ -69,7 +70,6 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private boolean retryScheduled;
     private int reconnectAttempts;
     private long sessionId;
-    private long startedAt;
     private final Map<Integer, PendingSentence> pendingSentences = new HashMap<>();
     private int currentSentenceId = -1;
     private int displayedSentenceId = -1;
@@ -105,6 +105,13 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         storage = new AppStorage(this);
         migrateAudioDefaults();
         migrateVisualDefaults();
+        bindUi();
+
+        updateTimer();
+        requestAudioAndStart();
+    }
+
+    private void bindUi() {
         statusText = findViewById(R.id.statusText);
         statusDot = findViewById(R.id.statusDot);
         timerText = findViewById(R.id.timerText);
@@ -145,9 +152,32 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         findViewById(R.id.backButton).setOnClickListener(v -> confirmEnd());
         findViewById(R.id.endButton).setOnClickListener(v -> endClass());
         pauseButton.setOnClickListener(v -> togglePause());
-        startedAt = System.currentTimeMillis();
-        updateTimer();
-        requestAudioAndStart();
+    }
+
+    @Override public void onConfigurationChanged(Configuration newConfig) {
+        String status = statusText.getText().toString();
+        int statusColor = statusDot.getBackgroundTintList() == null ? getColor(R.color.text_secondary)
+                : statusDot.getBackgroundTintList().getDefaultColor();
+        String english = englishText.getText().toString();
+        String chinese = chineseText.getText().toString();
+        String pauseLabel = pauseButton.getText().toString();
+        boolean pauseEnabled = pauseButton.isEnabled();
+        super.onConfigurationChanged(newConfig);
+        setContentView(R.layout.activity_live);
+        applyPaperInsets();
+        bindUi();
+        statusText.setText(status);
+        statusDot.setBackgroundTintList(ColorStateList.valueOf(statusColor));
+        englishText.setText(english);
+        chineseText.setText(chinese);
+        pauseButton.setText(pauseLabel);
+        pauseButton.setEnabled(pauseEnabled);
+        if ("暂停".equals(pauseLabel)) setPauseButtonIcon(R.drawable.ic_pause);
+        else if ("继续".equals(pauseLabel)) setPauseButtonIcon(R.drawable.ic_play);
+        else setPauseButtonIcon(R.drawable.ic_refresh);
+        renderTimer();
+        if (!followLatest) jumpToLatestButton.setVisibility(View.VISIBLE);
+        else if (!captions.isEmpty()) scrollCaptionListToBottom();
     }
 
     private void requestAudioAndStart() {
@@ -276,6 +306,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private void togglePause() {
         if (running) {
             paused = true;
+            ClassroomSessionService.markNotTranslating();
             pauseButton.setEnabled(false);
             setStatus("正在暂停…", R.color.text_secondary);
             worker.execute(nui::stopDialog);
@@ -298,6 +329,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private void discardAndExit() {
         if (ending) return;
         ending = true;
+        ClassroomSessionService.markNotTranslating();
         if (running && initialized) nui.cancelDialog();
         if (sessionId != 0) storage.deleteSession(sessionId);
         sessionId = 0;
@@ -307,6 +339,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private void endClass() {
         if (ending) return;
         ending = true;
+        ClassroomSessionService.markNotTranslating();
         if (running && initialized) {
             setStatus("正在保存…", R.color.text_secondary);
             worker.execute(nui::stopDialog);
@@ -327,9 +360,13 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     }
 
     private void updateTimer() {
-        long seconds = Math.max(0, (System.currentTimeMillis() - startedAt) / 1000);
-        timerText.setText(String.format(java.util.Locale.US, "%02d:%02d", seconds / 60, seconds % 60));
+        renderTimer();
         if (!isFinishing()) ui.postDelayed(this::updateTimer, 1000);
+    }
+
+    private void renderTimer() {
+        long seconds = ClassroomSessionService.getActiveElapsedMs() / 1000;
+        timerText.setText(String.format(java.util.Locale.US, "%02d:%02d", seconds / 60, seconds % 60));
     }
 
     private void setStatus(String text, int color) {
@@ -359,6 +396,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         if (event == Constants.NuiEvent.EVENT_TRANSCRIBER_STARTED) {
             if (sessionId == 0) sessionId = storage.startSession();
             running = true;
+            ClassroomSessionService.markTranslating();
             connecting = false;
             retryScheduled = false;
             reconnectAttempts = 0;
@@ -395,6 +433,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private synchronized void handleConnectionFailure(String reason) {
         if (ending || paused || retryScheduled) return;
         running = false;
+        ClassroomSessionService.markNotTranslating();
         connecting = false;
         ui.removeCallbacks(connectionTimeout);
         if (reconnectAttempts >= 3) {

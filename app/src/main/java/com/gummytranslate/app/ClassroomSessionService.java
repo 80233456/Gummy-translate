@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.os.Build;
 import android.content.pm.PackageManager;
 
@@ -20,8 +21,11 @@ public class ClassroomSessionService extends Service {
     private static final String CHANNEL_ID = "classroom_session";
     private static final int NOTIFICATION_ID = 401;
     private static volatile ClassroomSessionService activeInstance;
+    private static volatile boolean translatingRequested;
     private PowerManager.WakeLock wakeLock;
     private String currentStatus = "正在准备实时翻译";
+    private long accumulatedActiveMs;
+    private long activeSinceElapsed;
 
     public static void start(Context context) {
         context.startForegroundService(new Intent(context, ClassroomSessionService.class));
@@ -36,12 +40,40 @@ public class ClassroomSessionService extends Service {
         context.stopService(new Intent(context, ClassroomSessionService.class));
     }
 
+    public static void markTranslating() {
+        translatingRequested = true;
+        ClassroomSessionService instance = activeInstance;
+        if (instance != null && instance.activeSinceElapsed == 0) {
+            instance.activeSinceElapsed = SystemClock.elapsedRealtime();
+        }
+    }
+
+    public static void markNotTranslating() {
+        translatingRequested = false;
+        ClassroomSessionService instance = activeInstance;
+        if (instance != null && instance.activeSinceElapsed != 0) {
+            instance.accumulatedActiveMs += SystemClock.elapsedRealtime() - instance.activeSinceElapsed;
+            instance.activeSinceElapsed = 0;
+        }
+    }
+
+    public static long getActiveElapsedMs() {
+        ClassroomSessionService instance = activeInstance;
+        if (instance == null) return 0;
+        long current = instance.accumulatedActiveMs;
+        if (instance.activeSinceElapsed != 0) {
+            current += SystemClock.elapsedRealtime() - instance.activeSinceElapsed;
+        }
+        return current;
+    }
+
     @Override public void onCreate() {
         super.onCreate();
         activeInstance = this;
         createNotificationChannel();
         acquireWakeLock();
         startForeground(NOTIFICATION_ID, buildNotification(currentStatus));
+        if (translatingRequested) activeSinceElapsed = SystemClock.elapsedRealtime();
     }
 
     @Override public int onStartCommand(Intent intent, int flags, int startId) {
@@ -91,6 +123,7 @@ public class ClassroomSessionService extends Service {
     }
 
     @Override public void onDestroy() {
+        markNotTranslating();
         activeInstance = null;
         if (wakeLock != null && wakeLock.isHeld()) wakeLock.release();
         wakeLock = null;
