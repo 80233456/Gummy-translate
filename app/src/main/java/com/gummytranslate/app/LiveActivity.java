@@ -48,6 +48,7 @@ import java.util.concurrent.Executors;
 public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private static final String TAG = "GummyLive";
     private static final int RECORD_REQUEST = 1101;
+    private static final int NOTIFICATION_REQUEST = 1102;
     private static final int SAMPLE_RATE = 16000;
 
     private final NativeNui nui = new NativeNui();
@@ -151,9 +152,22 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
 
     private void requestAudioAndStart() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_REQUEST);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO,
+                        Manifest.permission.POST_NOTIFICATIONS}, RECORD_REQUEST);
+            } else {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_REQUEST);
+            }
         } else {
+            requestNotificationPermissionIfNeeded();
             beginSession();
+        }
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST);
         }
     }
 
@@ -168,6 +182,11 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     }
 
     private void beginSession() {
+        try {
+            ClassroomSessionService.start(this);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Unable to start classroom foreground service", error);
+        }
         startTranslation();
     }
 
@@ -314,6 +333,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     }
 
     private void setStatus(String text, int color) {
+        ClassroomSessionService.updateStatus(text);
         runOnUiThread(() -> {
             statusText.setText(text);
             statusDot.setBackgroundTintList(ColorStateList.valueOf(getColor(color)));
@@ -682,6 +702,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         if (initialized) nui.release();
         worker.shutdownNow();
         storage.close();
+        ClassroomSessionService.stop(this);
         super.onDestroy();
     }
 
