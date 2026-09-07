@@ -118,8 +118,12 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         englishText = findViewById(R.id.englishText);
         chineseText = findViewById(R.id.chineseText);
         int translationTextSize = getSharedPreferences("settings", MODE_PRIVATE).getInt("translation_text_sp", 20);
-        chineseText.setTextSize(translationTextSize);
-        englishText.setTextSize(Math.max(14, Math.round(translationTextSize * 0.76f)));
+        boolean landscape = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+        float chineseSize = landscape ? Math.min(18f, translationTextSize * 0.86f) : translationTextSize;
+        float englishSize = landscape ? Math.max(12f, Math.min(15f, chineseSize * 0.78f))
+                : Math.max(14, Math.round(translationTextSize * 0.76f));
+        chineseText.setTextSize(chineseSize);
+        englishText.setTextSize(englishSize);
         englishText.setMovementMethod(new ScrollingMovementMethod());
         chineseText.setMovementMethod(new ScrollingMovementMethod());
         pauseButton = findViewById(R.id.pauseButton);

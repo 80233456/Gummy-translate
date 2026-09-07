@@ -50,7 +50,7 @@
         <FrameLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1.25">
+            android:layout_weight="1">
             <ListView
                 android:id="@+id/captionList"
                 android:layout_width="match_parent"
@@ -84,7 +84,7 @@
         <LinearLayout
             android:layout_width="0dp"
             android:layout_height="match_parent"
-            android:layout_weight="1"
+            android:layout_weight="1.25"
             android:orientation="vertical">
             <LinearLayout
                 android:layout_width="wrap_content"
@@ -113,39 +113,45 @@
                 android:layout_weight="1"
                 android:background="@drawable/bg_paper_card"
                 android:elevation="2dp"
-                android:gravity="bottom"
                 android:orientation="vertical"
-                android:padding="14dp">
+                android:padding="12dp">
                 <TextView
                     android:id="@+id/englishText"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
                     android:fadeScrollbars="true"
                     android:gravity="bottom"
+                    android:includeFontPadding="false"
                     android:lineSpacingExtra="1dp"
-                    android:maxLines="5"
                     android:overScrollMode="never"
+                    android:paddingBottom="8dp"
                     android:scrollbars="vertical"
                     android:text="等待外教说话…"
                     android:textColor="@color/text_secondary"
                     android:textIsSelectable="true"
-                    android:textSize="15sp" />
+                    android:textSize="13sp" />
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/line" />
                 <TextView
                     android:id="@+id/chineseText"
                     android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="7dp"
+                    android:layout_height="0dp"
+                    android:layout_weight="1.12"
                     android:fadeScrollbars="true"
                     android:fontFamily="serif"
                     android:gravity="bottom"
+                    android:includeFontPadding="false"
                     android:lineSpacingExtra="2dp"
-                    android:maxLines="7"
                     android:overScrollMode="never"
+                    android:paddingTop="8dp"
                     android:scrollbars="vertical"
                     android:text="等待翻译…"
                     android:textColor="@color/text_primary"
                     android:textIsSelectable="true"
-                    android:textSize="20sp"
+                    android:textSize="17sp"
                     android:textStyle="bold" />
             </LinearLayout>
 
