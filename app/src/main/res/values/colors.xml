@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#8B5E3C</color>
+    <color name="primary_dark">#60412D</color>
+    <color name="accent">#A2673F</color>
+    <color name="surface">#F7F0E3</color>
+    <color name="surface_card">#FFF9ED</color>
+    <color name="surface_deep">#EADCC7</color>
+    <color name="text_primary">#342A22</color>
+    <color name="text_secondary">#75685B</color>
+    <color name="success">#557A57</color>
+    <color name="error">#A64B3C</color>
+    <color name="line">#D9C9B2</color>
+    <color name="icon_background">#F7F0E3</color>
+    <color name="surface_highlight">#FCF6EA</color>
+</resources>
