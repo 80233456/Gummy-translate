@@ -10,8 +10,8 @@ android {
         applicationId = "com.gummytranslate.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 18
-        versionName = "0.4.0-alpha03"
+        versionCode = 19
+        versionName = "0.4.0-alpha03.1"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
