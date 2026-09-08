@@ -45,6 +45,7 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private static final String TAG = "GummyLive";
@@ -54,6 +55,10 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
 
     private final NativeNui nui = new NativeNui();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService polishWorker = Executors.newSingleThreadExecutor();
+    private final QwenMtClient qwenMtClient = new QwenMtClient();
+    private final List<AppStorage.Caption> translationMemory = new ArrayList<>();
+    private final AtomicInteger pendingPolishCount = new AtomicInteger();
     private final Handler ui = new Handler();
     private final List<AppStorage.Caption> captions = new ArrayList<>();
     private AudioRecord recorder;
@@ -68,6 +73,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private boolean ending;
     private boolean connecting;
     private boolean retryScheduled;
+    private boolean finishAfterPolishing;
     private int reconnectAttempts;
     private long sessionId;
     private final Map<Integer, PendingSentence> pendingSentences = new HashMap<>();
@@ -356,6 +362,20 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private void finalizeSessionAndFinish() {
         if (isFinishing()) return;
         flushPendingSentences();
+        finishAfterPolishing = true;
+        int remaining = pendingPolishCount.get();
+        if (remaining > 0) {
+            setStatus("正在优化最后 " + remaining + " 条字幕…", R.color.text_secondary);
+            pauseButton.setEnabled(false);
+            ui.postDelayed(this::completeSessionAndFinish, 12000);
+            return;
+        }
+        completeSessionAndFinish();
+    }
+
+    private void completeSessionAndFinish() {
+        if (isFinishing() || !finishAfterPolishing) return;
+        finishAfterPolishing = false;
         if (sessionId != 0) {
             storage.finishSession(sessionId);
             sessionId = 0;
@@ -598,13 +618,49 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         if (english.equals(lastSavedEnglish) && chinese.equals(lastSavedChinese)) return;
         lastSavedEnglish = english;
         lastSavedChinese = chinese;
-        storage.addCaption(sessionId, english, chinese);
-        AppStorage.Caption caption = new AppStorage.Caption(english, chinese);
+        long captionId = storage.addCaption(sessionId, english, chinese);
+        AppStorage.Caption caption = new AppStorage.Caption(captionId, english, chinese);
+        String apiKey = getSharedPreferences("settings", MODE_PRIVATE).getString("dashscope_api_key", "");
+        boolean shouldOptimize = captionId > 0 && english != null && !english.trim().isEmpty()
+                && !apiKey.isEmpty();
+        caption.optimizing = shouldOptimize;
         runOnUiThread(() -> {
             captions.add(caption);
             adapter.notifyDataSetChanged();
             if (followLatest) scrollCaptionListToBottom();
             else jumpToLatestButton.setVisibility(View.VISIBLE);
+        });
+        if (shouldOptimize) polishCaption(caption, chinese, apiKey);
+    }
+
+    private void polishCaption(AppStorage.Caption caption, String gummyTranslation, String apiKey) {
+        pendingPolishCount.incrementAndGet();
+        polishWorker.execute(() -> {
+            try {
+                List<AppStorage.Caption> memory = new ArrayList<>(translationMemory);
+                String optimized = qwenMtClient.translate(apiKey, caption.english, memory);
+                storage.updateCaptionChinese(caption.id, optimized);
+                caption.chinese = optimized;
+                caption.optimizing = false;
+                caption.optimizationFailed = false;
+                translationMemory.add(new AppStorage.Caption(caption.id, caption.english, optimized));
+                while (translationMemory.size() > 2) translationMemory.remove(0);
+            } catch (Exception error) {
+                Log.w(TAG, "Qwen-MT optimization failed", error);
+                caption.chinese = gummyTranslation == null ? "" : gummyTranslation;
+                caption.optimizing = false;
+                caption.optimizationFailed = true;
+            }
+            int remaining = pendingPolishCount.decrementAndGet();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                adapter.notifyDataSetChanged();
+                if (followLatest) scrollCaptionListToBottom();
+                if (finishAfterPolishing) {
+                    if (remaining == 0) completeSessionAndFinish();
+                    else setStatus("正在优化最后 " + remaining + " 条字幕…", R.color.text_secondary);
+                }
+            });
         });
     }
 
@@ -744,6 +800,8 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         releaseRecorder();
         if (initialized) nui.release();
         worker.shutdownNow();
+        qwenMtClient.shutdown();
+        polishWorker.shutdownNow();
         storage.close();
         ClassroomSessionService.stop(this);
         super.onDestroy();
@@ -755,7 +813,12 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
             View row = convertView != null ? convertView : LayoutInflater.from(getContext()).inflate(R.layout.row_caption, parent, false);
             AppStorage.Caption caption = getItem(position);
             ((TextView) row.findViewById(R.id.rowEnglish)).setText(caption.english);
-            ((TextView) row.findViewById(R.id.rowChinese)).setText(caption.chinese);
+            TextView chinese = row.findViewById(R.id.rowChinese);
+            TextView state = row.findViewById(R.id.rowTranslationState);
+            chinese.setText(caption.optimizing ? "" : caption.chinese);
+            state.setVisibility(caption.optimizing || caption.optimizationFailed ? View.VISIBLE : View.GONE);
+            state.setText(caption.optimizing ? "Qwen 正在优化…" : "优化失败 · 已显示原译");
+            state.setTextColor(getColor(caption.optimizing ? R.color.text_secondary : R.color.error));
             return row;
         }
     }

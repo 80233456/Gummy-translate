@@ -2,4 +2,5 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android" android:layout_width="match_parent" android:layout_height="wrap_content" android:orientation="vertical" android:paddingStart="8dp" android:paddingEnd="8dp">
     <TextView android:id="@+id/rowEnglish" android:layout_width="match_parent" android:layout_height="wrap_content" android:textColor="@color/text_secondary" android:textSize="15sp" />
     <TextView android:id="@+id/rowChinese" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="3dp" android:fontFamily="serif" android:textColor="@color/text_primary" android:textSize="19sp" />
+    <TextView android:id="@+id/rowTranslationState" android:layout_width="match_parent" android:layout_height="wrap_content" android:layout_marginTop="4dp" android:text="Qwen 正在优化…" android:textColor="@color/text_secondary" android:textSize="12sp" android:visibility="gone" />
 </LinearLayout>
