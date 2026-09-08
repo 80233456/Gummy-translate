@@ -6,6 +6,7 @@ import org.json.JSONObject;
 import java.io.IOException;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import okhttp3.MediaType;
 import okhttp3.OkHttpClient;
@@ -23,6 +24,7 @@ final class QwenMtClient {
             .readTimeout(25, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
             .build();
+    private final AtomicBoolean shutdownStarted = new AtomicBoolean();
 
     String translate(String apiKey, String english, List<AppStorage.Caption> memory) throws Exception {
         JSONObject body = new JSONObject();
@@ -68,9 +70,16 @@ final class QwenMtClient {
     }
 
     void shutdown() {
-        client.dispatcher().cancelAll();
-        client.dispatcher().executorService().shutdown();
-        client.connectionPool().evictAll();
+        if (!shutdownStarted.compareAndSet(false, true)) return;
+        // Closing a live TLS socket can perform network I/O. Activity.onDestroy runs on
+        // the main thread, so keep the entire OkHttp teardown off it.
+        Thread cleanup = new Thread(() -> {
+            client.dispatcher().cancelAll();
+            client.dispatcher().executorService().shutdown();
+            client.connectionPool().evictAll();
+        }, "qwen-mt-cleanup");
+        cleanup.setDaemon(true);
+        cleanup.start();
     }
 
     private JSONArray courseTerms() throws Exception {
