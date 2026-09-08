@@ -29,10 +29,18 @@ public final class AppStorage extends SQLiteOpenHelper {
     }
 
     public static final class Caption {
+        public final long id;
         public final String english;
-        public final String chinese;
+        public String chinese;
+        public boolean optimizing;
+        public boolean optimizationFailed;
 
         public Caption(String english, String chinese) {
+            this(0, english, chinese);
+        }
+
+        public Caption(long id, String english, String chinese) {
+            this.id = id;
             this.english = english == null ? "" : english;
             this.chinese = chinese == null ? "" : chinese;
         }
@@ -74,14 +82,21 @@ public final class AppStorage extends SQLiteOpenHelper {
         getWritableDatabase().update("sessions", values, "id=?", new String[]{String.valueOf(id)});
     }
 
-    public void addCaption(long sessionId, String english, String chinese) {
-        if ((english == null || english.isEmpty()) && (chinese == null || chinese.isEmpty())) return;
+    public long addCaption(long sessionId, String english, String chinese) {
+        if ((english == null || english.isEmpty()) && (chinese == null || chinese.isEmpty())) return 0;
         ContentValues values = new ContentValues();
         values.put("session_id", sessionId);
         values.put("created_at", System.currentTimeMillis());
         values.put("english", english);
         values.put("chinese", chinese);
-        getWritableDatabase().insert("captions", null, values);
+        return getWritableDatabase().insert("captions", null, values);
+    }
+
+    public void updateCaptionChinese(long captionId, String chinese) {
+        if (captionId <= 0 || chinese == null || chinese.trim().isEmpty()) return;
+        ContentValues values = new ContentValues();
+        values.put("chinese", chinese.trim());
+        getWritableDatabase().update("captions", values, "id=?", new String[]{String.valueOf(captionId)});
     }
 
     public List<SessionSummary> listSessions() {
@@ -153,9 +168,9 @@ public final class AppStorage extends SQLiteOpenHelper {
 
     public List<Caption> getCaptions(long sessionId) {
         List<Caption> result = new ArrayList<>();
-        try (Cursor cursor = getReadableDatabase().query("captions", new String[]{"english", "chinese"},
+        try (Cursor cursor = getReadableDatabase().query("captions", new String[]{"id", "english", "chinese"},
                 "session_id=?", new String[]{String.valueOf(sessionId)}, null, null, "id ASC")) {
-            while (cursor.moveToNext()) result.add(new Caption(cursor.getString(0), cursor.getString(1)));
+            while (cursor.moveToNext()) result.add(new Caption(cursor.getLong(0), cursor.getString(1), cursor.getString(2)));
         }
         return result;
     }

@@ -2,8 +2,10 @@ package com.gummytranslate.app;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
+import android.content.res.Configuration;
 import android.media.AudioFormat;
 import android.media.AudioRecord;
 import android.media.MediaRecorder;
@@ -44,14 +46,20 @@ import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private static final String TAG = "GummyLive";
     private static final int RECORD_REQUEST = 1101;
+    private static final int NOTIFICATION_REQUEST = 1102;
     private static final int SAMPLE_RATE = 16000;
 
     private final NativeNui nui = new NativeNui();
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService polishWorker = Executors.newSingleThreadExecutor();
+    private final QwenMtClient qwenMtClient = new QwenMtClient();
+    private final List<AppStorage.Caption> translationMemory = new ArrayList<>();
+    private final AtomicInteger pendingPolishCount = new AtomicInteger();
     private final Handler ui = new Handler();
     private final List<AppStorage.Caption> captions = new ArrayList<>();
     private AudioRecord recorder;
@@ -66,9 +74,9 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private boolean ending;
     private boolean connecting;
     private boolean retryScheduled;
+    private boolean finishAfterPolishing;
     private int reconnectAttempts;
     private long sessionId;
-    private long startedAt;
     private final Map<Integer, PendingSentence> pendingSentences = new HashMap<>();
     private int currentSentenceId = -1;
     private int displayedSentenceId = -1;
@@ -104,14 +112,25 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         storage = new AppStorage(this);
         migrateAudioDefaults();
         migrateVisualDefaults();
+        bindUi();
+
+        updateTimer();
+        requestAudioAndStart();
+    }
+
+    private void bindUi() {
         statusText = findViewById(R.id.statusText);
         statusDot = findViewById(R.id.statusDot);
         timerText = findViewById(R.id.timerText);
         englishText = findViewById(R.id.englishText);
         chineseText = findViewById(R.id.chineseText);
         int translationTextSize = getSharedPreferences("settings", MODE_PRIVATE).getInt("translation_text_sp", 20);
-        chineseText.setTextSize(translationTextSize);
-        englishText.setTextSize(Math.max(14, Math.round(translationTextSize * 0.76f)));
+        boolean landscape = getResources().getConfiguration().orientation == Configuration.ORIENTATION_LANDSCAPE;
+        float chineseSize = landscape ? Math.min(18f, translationTextSize * 0.86f) : translationTextSize;
+        float englishSize = landscape ? Math.max(12f, Math.min(15f, chineseSize * 0.78f))
+                : Math.max(14, Math.round(translationTextSize * 0.76f));
+        chineseText.setTextSize(chineseSize);
+        englishText.setTextSize(englishSize);
         englishText.setMovementMethod(new ScrollingMovementMethod());
         chineseText.setMovementMethod(new ScrollingMovementMethod());
         pauseButton = findViewById(R.id.pauseButton);
@@ -144,16 +163,52 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         findViewById(R.id.backButton).setOnClickListener(v -> confirmEnd());
         findViewById(R.id.endButton).setOnClickListener(v -> endClass());
         pauseButton.setOnClickListener(v -> togglePause());
-        startedAt = System.currentTimeMillis();
-        updateTimer();
-        requestAudioAndStart();
+    }
+
+    @Override public void onConfigurationChanged(Configuration newConfig) {
+        String status = statusText.getText().toString();
+        int statusColor = statusDot.getBackgroundTintList() == null ? getColor(R.color.text_secondary)
+                : statusDot.getBackgroundTintList().getDefaultColor();
+        String english = englishText.getText().toString();
+        String chinese = chineseText.getText().toString();
+        String pauseLabel = pauseButton.getText().toString();
+        boolean pauseEnabled = pauseButton.isEnabled();
+        super.onConfigurationChanged(newConfig);
+        setContentView(R.layout.activity_live);
+        applyPaperInsets();
+        bindUi();
+        statusText.setText(status);
+        statusDot.setBackgroundTintList(ColorStateList.valueOf(statusColor));
+        englishText.setText(english);
+        chineseText.setText(chinese);
+        pauseButton.setText(pauseLabel);
+        pauseButton.setEnabled(pauseEnabled);
+        if ("暂停".equals(pauseLabel)) setPauseButtonIcon(R.drawable.ic_pause);
+        else if ("继续".equals(pauseLabel)) setPauseButtonIcon(R.drawable.ic_play);
+        else setPauseButtonIcon(R.drawable.ic_refresh);
+        renderTimer();
+        if (!followLatest) jumpToLatestButton.setVisibility(View.VISIBLE);
+        else if (!captions.isEmpty()) scrollCaptionListToBottom();
     }
 
     private void requestAudioAndStart() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_REQUEST);
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO,
+                        Manifest.permission.POST_NOTIFICATIONS}, RECORD_REQUEST);
+            } else {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, RECORD_REQUEST);
+            }
         } else {
+            requestNotificationPermissionIfNeeded();
             beginSession();
+        }
+    }
+
+    private void requestNotificationPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFICATION_REQUEST);
         }
     }
 
@@ -168,6 +223,11 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     }
 
     private void beginSession() {
+        try {
+            ClassroomSessionService.start(this);
+        } catch (RuntimeException error) {
+            Log.w(TAG, "Unable to start classroom foreground service", error);
+        }
         startTranslation();
     }
 
@@ -257,6 +317,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private void togglePause() {
         if (running) {
             paused = true;
+            ClassroomSessionService.markNotTranslating();
             pauseButton.setEnabled(false);
             setStatus("正在暂停…", R.color.text_secondary);
             worker.execute(nui::stopDialog);
@@ -279,15 +340,17 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private void discardAndExit() {
         if (ending) return;
         ending = true;
+        ClassroomSessionService.markNotTranslating();
         if (running && initialized) nui.cancelDialog();
         if (sessionId != 0) storage.deleteSession(sessionId);
         sessionId = 0;
-        finish();
+        returnToMain();
     }
 
     private void endClass() {
         if (ending) return;
         ending = true;
+        ClassroomSessionService.markNotTranslating();
         if (running && initialized) {
             setStatus("正在保存…", R.color.text_secondary);
             worker.execute(nui::stopDialog);
@@ -300,20 +363,46 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private void finalizeSessionAndFinish() {
         if (isFinishing()) return;
         flushPendingSentences();
+        finishAfterPolishing = true;
+        int remaining = pendingPolishCount.get();
+        if (remaining > 0) {
+            setStatus("正在优化最后 " + remaining + " 条字幕…", R.color.text_secondary);
+            pauseButton.setEnabled(false);
+            ui.postDelayed(this::completeSessionAndFinish, 12000);
+            return;
+        }
+        completeSessionAndFinish();
+    }
+
+    private void completeSessionAndFinish() {
+        if (isFinishing() || !finishAfterPolishing) return;
+        finishAfterPolishing = false;
         if (sessionId != 0) {
             storage.finishSession(sessionId);
             sessionId = 0;
         }
+        returnToMain();
+    }
+
+    private void returnToMain() {
+        Intent home = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(home);
         finish();
     }
 
     private void updateTimer() {
-        long seconds = Math.max(0, (System.currentTimeMillis() - startedAt) / 1000);
-        timerText.setText(String.format(java.util.Locale.US, "%02d:%02d", seconds / 60, seconds % 60));
+        renderTimer();
         if (!isFinishing()) ui.postDelayed(this::updateTimer, 1000);
     }
 
+    private void renderTimer() {
+        long seconds = ClassroomSessionService.getActiveElapsedMs() / 1000;
+        timerText.setText(String.format(java.util.Locale.US, "%02d:%02d", seconds / 60, seconds % 60));
+    }
+
     private void setStatus(String text, int color) {
+        ClassroomSessionService.updateStatus(text);
         runOnUiThread(() -> {
             statusText.setText(text);
             statusDot.setBackgroundTintList(ColorStateList.valueOf(getColor(color)));
@@ -339,6 +428,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         if (event == Constants.NuiEvent.EVENT_TRANSCRIBER_STARTED) {
             if (sessionId == 0) sessionId = storage.startSession();
             running = true;
+            ClassroomSessionService.markTranslating();
             connecting = false;
             retryScheduled = false;
             reconnectAttempts = 0;
@@ -375,6 +465,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
     private synchronized void handleConnectionFailure(String reason) {
         if (ending || paused || retryScheduled) return;
         running = false;
+        ClassroomSessionService.markNotTranslating();
         connecting = false;
         ui.removeCallbacks(connectionTimeout);
         if (reconnectAttempts >= 3) {
@@ -535,13 +626,49 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         if (english.equals(lastSavedEnglish) && chinese.equals(lastSavedChinese)) return;
         lastSavedEnglish = english;
         lastSavedChinese = chinese;
-        storage.addCaption(sessionId, english, chinese);
-        AppStorage.Caption caption = new AppStorage.Caption(english, chinese);
+        long captionId = storage.addCaption(sessionId, english, chinese);
+        AppStorage.Caption caption = new AppStorage.Caption(captionId, english, chinese);
+        String apiKey = getSharedPreferences("settings", MODE_PRIVATE).getString("dashscope_api_key", "");
+        boolean shouldOptimize = captionId > 0 && english != null && !english.trim().isEmpty()
+                && !apiKey.isEmpty();
+        caption.optimizing = shouldOptimize;
         runOnUiThread(() -> {
             captions.add(caption);
             adapter.notifyDataSetChanged();
             if (followLatest) scrollCaptionListToBottom();
             else jumpToLatestButton.setVisibility(View.VISIBLE);
+        });
+        if (shouldOptimize) polishCaption(caption, chinese, apiKey);
+    }
+
+    private void polishCaption(AppStorage.Caption caption, String gummyTranslation, String apiKey) {
+        pendingPolishCount.incrementAndGet();
+        polishWorker.execute(() -> {
+            try {
+                List<AppStorage.Caption> memory = new ArrayList<>(translationMemory);
+                String optimized = qwenMtClient.translate(apiKey, caption.english, memory);
+                storage.updateCaptionChinese(caption.id, optimized);
+                caption.chinese = optimized;
+                caption.optimizing = false;
+                caption.optimizationFailed = false;
+                translationMemory.add(new AppStorage.Caption(caption.id, caption.english, optimized));
+                while (translationMemory.size() > 2) translationMemory.remove(0);
+            } catch (Exception error) {
+                Log.w(TAG, "Qwen-MT optimization failed", error);
+                caption.chinese = gummyTranslation == null ? "" : gummyTranslation;
+                caption.optimizing = false;
+                caption.optimizationFailed = true;
+            }
+            int remaining = pendingPolishCount.decrementAndGet();
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                adapter.notifyDataSetChanged();
+                if (followLatest) scrollCaptionListToBottom();
+                if (finishAfterPolishing) {
+                    if (remaining == 0) completeSessionAndFinish();
+                    else setStatus("正在优化最后 " + remaining + " 条字幕…", R.color.text_secondary);
+                }
+            });
         });
     }
 
@@ -681,7 +808,10 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         releaseRecorder();
         if (initialized) nui.release();
         worker.shutdownNow();
+        qwenMtClient.shutdown();
+        polishWorker.shutdownNow();
         storage.close();
+        ClassroomSessionService.stop(this);
         super.onDestroy();
     }
 
@@ -691,7 +821,12 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
             View row = convertView != null ? convertView : LayoutInflater.from(getContext()).inflate(R.layout.row_caption, parent, false);
             AppStorage.Caption caption = getItem(position);
             ((TextView) row.findViewById(R.id.rowEnglish)).setText(caption.english);
-            ((TextView) row.findViewById(R.id.rowChinese)).setText(caption.chinese);
+            TextView chinese = row.findViewById(R.id.rowChinese);
+            TextView state = row.findViewById(R.id.rowTranslationState);
+            chinese.setText(caption.optimizing ? "" : caption.chinese);
+            state.setVisibility(caption.optimizing || caption.optimizationFailed ? View.VISIBLE : View.GONE);
+            state.setText(caption.optimizing ? "Qwen 正在优化…" : "优化失败 · 已显示原译");
+            state.setTextColor(getColor(caption.optimizing ? R.color.text_secondary : R.color.error));
             return row;
         }
     }
