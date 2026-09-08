@@ -2,6 +2,7 @@ package com.gummytranslate.app;
 
 import android.Manifest;
 import android.app.AlertDialog;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.content.res.Configuration;
@@ -343,7 +344,7 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
         if (running && initialized) nui.cancelDialog();
         if (sessionId != 0) storage.deleteSession(sessionId);
         sessionId = 0;
-        finish();
+        returnToMain();
     }
 
     private void endClass() {
@@ -380,6 +381,13 @@ public class LiveActivity extends PaperActivity implements INativeNuiCallback {
             storage.finishSession(sessionId);
             sessionId = 0;
         }
+        returnToMain();
+    }
+
+    private void returnToMain() {
+        Intent home = new Intent(this, MainActivity.class)
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        startActivity(home);
         finish();
     }
 
